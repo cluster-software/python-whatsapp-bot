@@ -2,6 +2,7 @@ from openai import OpenAI
 import shelve
 from dotenv import load_dotenv
 import os
+import json
 import time
 import logging
 
@@ -53,22 +54,51 @@ def run_assistant(thread, name):
         assistant_id=assistant.id,
         # instructions=f"You are having a conversation with {name}",
     )
+    products = []
+    tool_outcome = []
 
     # Wait for completion
     # https://platform.openai.com/docs/assistants/how-it-works/runs-and-run-steps#:~:text=under%20failed_at.-,Polling%20for%20updates,-In%20order%20to
     while run.status != "completed":
         # Be nice to the API
-        time.sleep(0.5)
-        run = client.beta.threads.runs.retrieve(thread_id=thread.id, run_id=run.id)
-
+        time.sleep(0.25)
+        logging.info(run.status)
+        if run.status == "requires_action":
+            logging.info("ACTION REQUIRED")
+            tool_calls = run.required_action.submit_tool_outputs.tool_calls
+            call_ids = [x.id for x in tool_calls]
+            for call in tool_calls:
+                if call.function.name == "get_product":
+                    try:
+                        products.append(
+                            json.loads(call.function.arguments)["product_name"]
+                        )
+                        tool_outcome.append("success")
+                    except:
+                        tool_outcome.append("failure")
+            run = client.beta.threads.runs.submit_tool_outputs(
+                thread_id=thread.id,
+                run_id=run.id,
+                tool_outputs=[
+                    {
+                        "tool_call_id": call_ids[i],
+                        "output": tool_outcome[i],
+                    }
+                    for i in range(len(call_ids))
+                ],
+            )
+        else:
+            run = client.beta.threads.runs.retrieve(thread_id=thread.id, run_id=run.id)
+    logging.info(f"Run: {run}")
     # Retrieve the Messages
     messages = client.beta.threads.messages.list(thread_id=thread.id)
     new_message = messages.data[0].content[0].text.value
     logging.info(f"Generated message: {new_message}")
-    return new_message
+    logging.info(f"Products: {products}")
+    return {"new_message": new_message, "products": products}
 
 
-def generate_response(message_body, wa_id, name):
+def generate_response_agent(message_body, wa_id, name):
     # Check if there is already a thread_id for the wa_id
     thread_id = check_if_thread_exists(wa_id)
 
@@ -92,6 +122,6 @@ def generate_response(message_body, wa_id, name):
     )
 
     # Run the assistant and get the new message
-    new_message = run_assistant(thread, name)
+    agent_output = run_assistant(thread, name)
 
-    return new_message
+    return agent_output
