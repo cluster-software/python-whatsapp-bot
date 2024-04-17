@@ -3,6 +3,7 @@ from flask import current_app, jsonify
 import json
 import requests
 
+from app.services.agents import OpenAIChatbot
 from app.services.openai_service import generate_response_agent
 from app.services.hubspot_service import (
     create_hubspot_contact,
@@ -27,6 +28,8 @@ PRODUCT_URLS = {
 }
 
 MOST_RECENT_PRODUCT_REQUEST = {"0": None}
+
+BOT = OpenAIChatbot(openai_model="gpt-3.5-turbo-0125")
 
 
 def log_http_response(response):
@@ -115,7 +118,7 @@ def get_button_message_data(recipient, body_text, buttons):
 
 def generate_response(response):
     # Return text in uppercase
-    return response.upper()
+    return BOT.respond_to_user(response)
 
 
 def send_message(data):
@@ -189,56 +192,61 @@ def process_whatsapp_message(body):
         message_body = message["text"]["body"]
 
     # TODO: implement custom function here
-    # response = generate_response(message_body)
+    response = generate_response(message_body)
+    response_clean = process_text_for_whatsapp(response)
+    response_text_data = get_text_message_data(
+        current_app.config["RECIPIENT_WAID"], response_clean
+    )
+    send_message(response_text_data)
 
     # OpenAI Integration
-    agent_output = generate_response_agent(message_body, wa_id, customer_name)
-    # If the agent used tools to identify products then we need to go through a deterministic flow to initate an order
-    products = agent_output.get("products")
-    if len(products) > 0:
-        product = products[0]
-        # update this global variable which might get used for later responses
-        MOST_RECENT_PRODUCT_REQUEST["0"] = product
-        # Send text message about the product
-        product_message = (
-            f"Si, tenemos {product}!\n\n" f"{INITIATE_FLOW_DESCRIPTIONS[product]}"
-        )
-        response = process_text_for_whatsapp(product_message)
-        text_data = get_text_message_data(
-            current_app.config["RECIPIENT_WAID"], response
-        )
-        send_message(text_data)
-        # Send image of product
-        image_data = get_img_message_data(
-            current_app.config["RECIPIENT_WAID"], IMGS[product]
-        )
-        send_message(image_data)
-        # Send options for initiating order flow or not
-        buttons = [
-            {"type": "reply", "reply": {"title": "Si", "id": "0"}},
-            {"type": "reply", "reply": {"title": "No", "id": "1"}},
-        ]
+    # agent_output = generate_response_agent(message_body, wa_id, customer_name)
+    # # If the agent used tools to identify products then we need to go through a deterministic flow to initate an order
+    # products = agent_output.get("products")
+    # if len(products) > 0:
+    #     product = products[0]
+    #     # update this global variable which might get used for later responses
+    #     MOST_RECENT_PRODUCT_REQUEST["0"] = product
+    #     # Send text message about the product
+    #     product_message = (
+    #         f"Si, tenemos {product}!\n\n" f"{INITIATE_FLOW_DESCRIPTIONS[product]}"
+    #     )
+    #     response = process_text_for_whatsapp(product_message)
+    #     text_data = get_text_message_data(
+    #         current_app.config["RECIPIENT_WAID"], response
+    #     )
+    #     send_message(text_data)
+    #     # Send image of product
+    #     image_data = get_img_message_data(
+    #         current_app.config["RECIPIENT_WAID"], IMGS[product]
+    #     )
+    #     send_message(image_data)
+    #     # Send options for initiating order flow or not
+    #     buttons = [
+    #         {"type": "reply", "reply": {"title": "Si", "id": "0"}},
+    #         {"type": "reply", "reply": {"title": "No", "id": "1"}},
+    #     ]
 
-        button_data = get_button_message_data(
-            current_app.config["RECIPIENT_WAID"],
-            "Te gustaría hacer un pedido?",
-            buttons,
-        )
-        send_message(button_data)
-        # Create Contact in Hubspot CRM
-        contact_data = create_hubspot_contact(
-            phone_number=wa_id, first_name=customer_name
-        )
-        contact_id = contact_data["id"]
-        # Associate Note with Contact
-        note = f"Cliente interesado en: {product}"
-        response = create_hubspot_note_on_contact(contact_id, note)
+    #     button_data = get_button_message_data(
+    #         current_app.config["RECIPIENT_WAID"],
+    #         "Te gustaría hacer un pedido?",
+    #         buttons,
+    #     )
+    #     send_message(button_data)
+    #     # Create Contact in Hubspot CRM
+    #     contact_data = create_hubspot_contact(
+    #         phone_number=wa_id, first_name=customer_name
+    #     )
+    #     contact_id = contact_data["id"]
+    #     # Associate Note with Contact
+    #     note = f"Cliente interesado en: {product}"
+    #     response = create_hubspot_note_on_contact(contact_id, note)
 
-    else:
-        response = process_text_for_whatsapp(agent_output["new_message"])
+    # else:
+    #     response = process_text_for_whatsapp(agent_output["new_message"])
 
-        data = get_text_message_data(current_app.config["RECIPIENT_WAID"], response)
-        send_message(data)
+    #     data = get_text_message_data(current_app.config["RECIPIENT_WAID"], response)
+    #     send_message(data)
 
 
 def is_valid_whatsapp_message(body):

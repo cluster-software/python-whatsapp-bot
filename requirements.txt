@@ -6,3 +6,5 @@ aiohttp
 pydantic
 langchain
 tiktoken
+langchain_openai
+chromadb
