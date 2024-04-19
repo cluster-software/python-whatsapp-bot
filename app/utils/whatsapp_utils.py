@@ -9,6 +9,7 @@ from app.services.hubspot_service import (
     create_hubspot_contact,
     create_hubspot_note_on_contact,
 )
+from app.utils.whatsapp_message_templates import INTRO_MESSAGE
 
 import re
 
@@ -39,6 +40,7 @@ def log_http_response(response):
 
 
 def get_text_message_data(recipient, text):
+    text = process_text_for_whatsapp(text)
     return json.dumps(
         {
             "messaging_product": "whatsapp",
@@ -46,7 +48,8 @@ def get_text_message_data(recipient, text):
             "to": recipient,
             "type": "text",
             "text": {"preview_url": False, "body": text},
-        }
+        },
+        ensure_ascii=False,
     )
 
 
@@ -63,7 +66,7 @@ def get_img_message_data(recipient, link):
 
 
 def get_list_message_data(
-    recipient_waid, header_text, body_text, footer_text, sections
+    recipient_waid, header_text, body_text, sections, footer_text=None
 ):
     """
     Create a list message payload for WhatsApp.
@@ -85,10 +88,11 @@ def get_list_message_data(
             "type": "list",
             "header": {"type": "text", "text": header_text},
             "body": {"text": body_text},
-            "footer": {"text": footer_text},
             "action": {"button": "Select an option", "sections": sections},
         },
     }
+    if footer_text is not None:
+        list_message_payload["interactive"]["footer"] = footer_text
     return json.dumps(list_message_payload)
 
 
@@ -117,8 +121,32 @@ def get_button_message_data(recipient, body_text, buttons):
 
 
 def generate_response(response):
-    # Return text in uppercase
-    return BOT.respond_to_user(response)
+    messages_out = []
+    if len(BOT.chat_history.messages) == 1:
+        intro_text = "Hola!"
+        intro_text_data = get_text_message_data(
+            current_app.config["RECIPIENT_WAID"], intro_text
+        )
+        messages_out.append(intro_text_data)
+
+        intro_button_message_data = get_list_message_data(
+            current_app.config["RECIPIENT_WAID"],
+            INTRO_MESSAGE["header_text"],
+            INTRO_MESSAGE["body_text"],
+            INTRO_MESSAGE["sections"],
+        )
+        messages_out.append(intro_button_message_data)
+        # add messages to agent history
+        BOT.chat_history.add_ai_message(intro_text)
+        BOT.chat_history.add_ai_message(INTRO_MESSAGE["body_text"])
+    else:
+        response_text = BOT.respond_to_user(response)
+        response_text_data = get_text_message_data(
+            current_app.config["RECIPIENT_WAID"], response_text
+        )
+        messages_out.append(response_text_data)
+
+    return messages_out
 
 
 def send_message(data):
@@ -128,7 +156,8 @@ def send_message(data):
     }
 
     url = f"https://graph.facebook.com/{current_app.config['VERSION']}/{current_app.config['PHONE_NUMBER_ID']}/messages"
-
+    print(f"Bearer {current_app.config['ACCESS_TOKEN']}")
+    print("DATA: ", data)
     try:
         response = requests.post(
             url, data=data, headers=headers, timeout=10
@@ -162,6 +191,8 @@ def process_text_for_whatsapp(text):
 
     # Substitute occurrences of the pattern with the replacement
     whatsapp_style_text = re.sub(pattern, replacement, text)
+    # Strip non-ASCII characters from the text
+    whatsapp_style_text = re.sub(r"[^\x00-\x7F]+", "", whatsapp_style_text)
 
     return whatsapp_style_text
 
@@ -175,29 +206,49 @@ def process_whatsapp_message(body):
 
     message = body["entry"][0]["changes"][0]["value"]["messages"][0]
     if message["type"] == "interactive":
-        # hardcoded assumption that this is a yes/no reply to request for order
-        button_reply = message["interactive"]["button_reply"]
-        if button_reply["id"] == "0":  # they said yes
-            most_recent_product = MOST_RECENT_PRODUCT_REQUEST["0"]
-            message = f"Perfecto! Puedes hacer el pedido en este link: {PRODUCT_URLS[most_recent_product]}"
+        if message["interactive"]["type"] == "list_reply":
+            reply = message["interactive"]["list_reply"]
+            if reply["id"] == "order_status":
+                pass
+            elif reply["id"] == "quote":
+                text = "Genial! Para que producto quieres la cotizacion?"
+                response_text_data = get_text_message_data(
+                    current_app.config["RECIPIENT_WAID"], text
+                )
+                send_message(response_text_data)
+                BOT.chat_history.add_ai_message(text)
+                return
+            elif reply["id"] == "other":
+                pass  # route to agent
         else:
-            message = "Entendido! Te puedo ayudar con otra cosa?"
-        response = process_text_for_whatsapp(message)
-        text_data = get_text_message_data(
-            current_app.config["RECIPIENT_WAID"], response
-        )
-        send_message(text_data)
-        return
+            # hardcoded assumption that this is a yes/no reply to request for order
+            button_reply = message["interactive"]["button_reply"]
+            if button_reply["id"] == "0":  # they said yes
+                most_recent_product = MOST_RECENT_PRODUCT_REQUEST["0"]
+                message = f"Perfecto! Puedes hacer el pedido en este link: {PRODUCT_URLS[most_recent_product]}"
+            else:
+                message = "Entendido! Te puedo ayudar con otra cosa?"
+            response = process_text_for_whatsapp(message)
+            print("RECIPIENT: ", current_app.config["RECIPIENT_WAID"])
+            text_data = get_text_message_data(
+                current_app.config["RECIPIENT_WAID"], response
+            )
+            send_message(text_data)
+            return
     else:
         message_body = message["text"]["body"]
 
     # TODO: implement custom function here
-    response = generate_response(message_body)
-    response_clean = process_text_for_whatsapp(response)
-    response_text_data = get_text_message_data(
-        current_app.config["RECIPIENT_WAID"], response_clean
-    )
-    send_message(response_text_data)
+    response_messages = generate_response(message_body)
+    for msg in response_messages:
+        send_message(msg)
+    # response_clean = process_text_for_whatsapp(response)
+    # print(f"response clean: {response_clean}")
+    # response_text_data = get_text_message_data(
+    #     current_app.config["RECIPIENT_WAID"], response_clean
+    # )
+    # print(f"response_text_data: {response_text_data}")
+    # send_message(response_text_data)
 
     # OpenAI Integration
     # agent_output = generate_response_agent(message_body, wa_id, customer_name)

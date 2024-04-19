@@ -13,5 +13,7 @@ class GetProductInfo(BaseModel):
 
     product_name: str = Field(..., description="The product name")
 
+def create_produc
+
 
 TOOLS = [GetProductInfo]
